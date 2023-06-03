@@ -39,14 +39,40 @@ private template MemberNamesByUDA(T, UDA){
 }
 
 /// Member names that have @Val
-private enum Vals(T) = MemberNamesByUDA!(T, Val);
+private template MembersWithVal(T){
+	enum MembersWithVal = MemberNamesByUDA!(T, Val);
+}
+
 /// Member names that have @Key
-private enum Keys(T) = MemberNamesByUDA!(T, Key);
+private template MembersWithKey(T){
+	enum MembersWithKey = MemberNamesByUDA!(T, Key);
+}
+
 /// Member names that have @Auto
-private enum Autos(T) = MemberNamesByUDA!(T, Auto);
+private template MembersWithAuto(T){
+	enum MembersWithAuto = MemberNamesByUDA!(T, Auto);
+}
+
 /// Member names that have @Mangle
-private enum Mangles(T) = MemberNamesByUDA!(T, Mangle);
-///
+private template MembersWithMangle(T){
+	enum MembersWithMangle = MemberNamesByUDA!(T, Mangle);
+}
+
+/// Member names that are of a specifc @Group name
+private template MembersWithGroup(T, string name){
+	enum MembersWithGroup = getMembersWithGroup;
+	private string[] getMembersWithGroup(){
+		string[] ret;
+		static foreach (sym; getSymbolsByUDA!(T, Group)){{
+			bool include = false;
+			static foreach (group; getUDAs!(sym, Group))
+				include = include || group.name == name;
+			if (include)
+				ret ~= sym.stringof;
+		}}
+		return ret;
+	}
+}
 
 /// SQL types
 private template SQLTypeMap(T){
@@ -125,8 +151,8 @@ MySQLVal toSQL(From)(From val) pure {
 abstract class DBObject{}
 
 /// Create Table query
-private template QueryCreateTable(T) if (is(T : DBObject)){
-	enum QueryCreateTable = generateQuery;
+private template QueryCreate(T) if (is(T : DBObject)){
+	enum QueryCreate = generateQuery;
 	private string generateQuery(){
 		string ret = "CREATE TABLE " ~ T.stringof ~ " (";
 		static foreach (sym; getSymbolsByUDA!(T, Val)){
@@ -136,10 +162,7 @@ private template QueryCreateTable(T) if (is(T : DBObject)){
 			ret ~= ", ";
 		}
 		static if (getSymbolsByUDA!(T, Key).length){
-			ret ~= "PRIMARY KEY (";
-			static foreach (sym; getSymbolsByUDA!(T, Key))
-				ret ~= sym.stringof ~ ", ";
-			ret = ret.chomp(", ") ~ ")";
+			ret ~= "PRIMARY KEY (" ~ MembersWithKey!T.join(", ") ~ ")";
 		}else{
 			ret = ret.chomp(", ");
 		}
@@ -165,45 +188,74 @@ private template QueryInsert(T) if (is(T : DBObject)){
 	}
 }
 
-/// Fetch all
+/// Fetch all query
 private template QueryFetchAll(T){
-	enum QueryFetchAll = generateQuery;
-	private string generateQuery(){
-		string ret = "SELECT ";
-		static foreach (sym; getSymbolsByUDA!(T, Val))
-			ret ~= sym.stringof ~ ", ";
-		ret = ret.chomp(", ") ~ " FROM " ~ T.stringof ~ ";";
-		return ret;
-	}
+	enum QueryFetchAll = "SELECT " ~ MembersWithVal!T.join(", ") ~ " FROM " ~
+			T.stringof ~ ";";
 }
 
-/// Fetch By keys
+/// Fetch by keys query
 private template QueryFetch(T){
-	enum QueryFetch = generateQuery;
-	private string generateQuery(){
-		string ret = QueryFetchAll!T.chomp(";") ~ " WHERE ";
-		static foreach (sym; getSymbolsByUDA!(T, Key))
-			ret ~= sym.stringof ~ "=?, ";
-		ret = ret.chomp(", ") ~ ";";
-		return ret;
-	}
+	enum QueryFetch = QueryFetchAll!T.chomp(";") ~ " WHERE " ~
+		MembersWithKey!T.join("=?, ") ~ "=?;";
 }
 
-/// Fetch By a Group
+/// Fetch by a Group query
 private template QueryFetch(T, string name){
-	enum QueryFetch = generateQuery;
-	private string generateQuery(){
-		string ret = QueryFetchAll!T.chomp(";") ~ " WHERE ";
-		static foreach (sym; getSymbolsByUDA!(T, Group)){{
-			bool include = false;
-			static foreach (group; getUDAs!(sym, Group))
-				include = include || group.name == name;
-			if (include)
-				ret ~= sym.stringof ~ "=?, ";
-		}}
-		ret = ret.chomp(", ") ~ ";";
-		return ret;
-	}
+	enum QueryFetch = QueryFetchAll!T.chomp(";") ~ " WHERE " ~
+		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
+}
+
+/// Update all query
+private template QueryUpdateAll(T){
+	enum QueryUpdateAll = "UPDATE " ~ T.stringof ~ " SET " ~
+		MembersWithVal!T.join("=?, ") ~ "=?;";
+}
+
+/// Update by Keys query
+private template QueryUpdate(T){
+	enum QueryUpdate = QueryUpdateAll!T.chomp(";") ~ " WHERE " ~
+		MembersWithKey!T.join("=?, ") ~ "=?;";
+}
+
+/// Update by a Group query
+private template QueryUpdate(T, string name){
+	enum QueryUpdate = QueryUpdateAll!T.chomp(";") ~ " WHERE " ~
+		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
+}
+
+/// Drop all query
+private template QueryDropAll(T){
+	enum QueryDropAll = "DELETE FROM " ~ T.stringof ~ ";";
+}
+
+/// Drop by Keys query
+private template QueryDrop(T){
+	enum QueryDrop = QueryDropAll!T.chomp(";") ~ " WHERE " ~
+		MembersWithKey!T.join("=?, ") ~ "=?;";
+}
+
+/// Drop by a Group query
+private template QueryDrop(T, string name){
+	enum QueryDrop = QueryDropAll!T.chomp(";") ~ " WHERE " ~
+		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
+}
+
+/// Count all query
+private template QueryCountAll(T){
+	enum QueryCountAll = "SELECT Count(*) FROM " ~ T.stringof ~ ";";
+}
+
+/// Count by keys query
+private template QueryCount(T){
+	enum QueryCount = QueryCountAll!T.chomp(";") ~ " WHERE " ~
+		MembersWithKey!T.join("=?, ") ~ "=?;";
+}
+
+/// Count by a Group query
+private template QueryCount(T, string name){
+	enum QueryCount = QueryCountAll!T.chomp(";") ~ " WHERE " ~
+		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
 }
 
 unittest{
@@ -213,5 +265,27 @@ unittest{
 		@Val @Group("main") @Group("username") @Size(10) string username;
 		@Val @Group("main") A other;
 	}
-	writeln(QueryFetch!(A, "username"));
+	writefln!"create: %s"(QueryCreate!A);
+	writefln!"insert: %s"(QueryInsert!A);
+
+	writefln!"fetchAll: %s"(QueryFetchAll!A);
+	writefln!"fetch: %s"(QueryFetch!A);
+	writefln!"fetch \"main\": %s"(QueryFetch!(A, "main"));
+	writefln!"fetch \"username\": %s"(QueryFetch!(A, "username"));
+
+	writefln!"updateAll: %s"(QueryUpdateAll!A);
+	writefln!"update: %s"(QueryUpdate!A);
+	writefln!"update \"main\": %s"(QueryUpdate!(A, "main"));
+	writefln!"update \"username\": %s"(QueryUpdate!(A, "username"));
+
+	writefln!"dropAll: %s"(QueryDropAll!A);
+	writefln!"drop: %s"(QueryDrop!A);
+	writefln!"drop \"main\": %s"(QueryDrop!(A, "main"));
+	writefln!"drop \"username\": %s"(QueryDrop!(A, "username"));
+
+	writefln!"countAll: %s"(QueryCountAll!A);
+	writefln!"count: %s"(QueryCount!A);
+	writefln!"count \"main\": %s"(QueryCount!(A, "main"));
+	writefln!"count \"username\": %s"(QueryCount!(A, "username"));
+
 }
