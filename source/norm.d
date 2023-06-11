@@ -1,4 +1,4 @@
-module tablemaker.dbase;
+module norm;
 
 import utils.misc;
 
@@ -16,12 +16,6 @@ import core.vararg;
 
 /// UDA. label as Database column
 enum Val;
-/// UDA. label as key. can be used with multiple
-enum Key;
-/// UDA. auto increment
-enum Auto;
-/// UDA. enable integer mangling
-enum Mangle;
 /// UDA. mark with size. use with string to make `VARCHAR(x)` etc
 struct Size{ ulong len; }
 /// Fetch group
@@ -43,21 +37,6 @@ private template MembersWithVal(T){
 	enum MembersWithVal = MemberNamesByUDA!(T, Val);
 }
 
-/// Member names that have @Key
-private template MembersWithKey(T){
-	enum MembersWithKey = MemberNamesByUDA!(T, Key);
-}
-
-/// Member names that have @Auto
-private template MembersWithAuto(T){
-	enum MembersWithAuto = MemberNamesByUDA!(T, Auto);
-}
-
-/// Member names that have @Mangle
-private template MembersWithMangle(T){
-	enum MembersWithMangle = MemberNamesByUDA!(T, Mangle);
-}
-
 /// Member names that are of a specifc @Group name
 private template MembersWithGroup(T, string name){
 	enum MembersWithGroup = getMembersWithGroup;
@@ -70,6 +49,21 @@ private template MembersWithGroup(T, string name){
 			if (include)
 				ret ~= sym.stringof;
 		}}
+		return ret;
+	}
+}
+
+/// Group names
+private template Groups(T){
+	enum Groups = getGroups;
+	private string[] getGroups(){
+		string[] ret;
+		static foreach (sym; getSymbolsByUDA!(T, Group)){
+			static foreach (group; getUDAs!(sym, Group)){
+				static if (!ret.canFind(group.name))
+					ret ~= group.name;
+			}
+		}
 		return ret;
 	}
 }
@@ -110,7 +104,6 @@ private template SQLTypeMap(T){
 		static assert (false, "unsupported type in SQLTypeMap: " ~ name);
 }
 
-/// get SQL type name
 private template SQLType(alias sym){
 	static if (hasUDA!(sym, Size) && (
 				is (typeof(sym) == string) ||
@@ -148,27 +141,34 @@ MySQLVal toSQL(From)(From val) pure {
 }
 
 /// Parent class for all DBObjects
-abstract class DBObject{}
+abstract class DBObject{
+	ulong _normId;
+
+public:
+	/// Internal unique Id
+	@property ulong id() pure const {
+		return _normId;
+	}
+}
 
 /// Create Table query
 private template QueryCreate(T) if (is(T : DBObject)){
 	enum QueryCreate = generateQuery;
 	private string generateQuery(){
-		string ret = "CREATE TABLE " ~ T.stringof ~ " (";
-		static foreach (sym; getSymbolsByUDA!(T, Val)){
-			ret ~= sym.stringof ~ " " ~ SQLType!sym;
-			static if (hasUDA!(sym, Auto))
-				ret ~= " AUTO_INCREMENT";
-			ret ~= ", ";
-		}
-		static if (getSymbolsByUDA!(T, Key).length){
-			ret ~= "PRIMARY KEY (" ~ MembersWithKey!T.join(", ") ~ ")";
-		}else{
-			ret = ret.chomp(", ");
-		}
+		string ret = "CREATE TABLE " ~ T.stringof ~ " (" ~
+			"__normId BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ";
+		static foreach (sym; getSymbolsByUDA!(T, Val))
+			ret ~= sym.stringof ~ " " ~ SQLType!sym ~ ", ";
+		ret = ret.chomp(", ");
 		return ret ~ ");";
 	}
 }
+
+/// Drop Table query
+private template QueryDropTable(T) if (is(T : DBObject)){
+	enum QueryDropTable = "DROP TABLE " ~ T.stringof ~ ";";
+}
+
 
 /// Insert query
 private template QueryInsert(T) if (is(T : DBObject)){
@@ -176,12 +176,9 @@ private template QueryInsert(T) if (is(T : DBObject)){
 	private string generateQuery(){
 		string ret = "INSERT INTO " ~ T.stringof ~ " (";
 		string post;
-		// insert those that are not Auto
 		static foreach (sym; getSymbolsByUDA!(T, Val)){
-			static if (!hasUDA!(sym, Auto)){
-				ret ~= sym.stringof ~ ", ";
-				post ~= "?, ";
-			}
+			ret ~= sym.stringof ~ ", ";
+			post ~= "?, ";
 		}
 		ret = ret.chomp(", ") ~ ") VALUES (" ~ post.chomp(", ") ~ ");";
 		return ret;
@@ -190,14 +187,13 @@ private template QueryInsert(T) if (is(T : DBObject)){
 
 /// Fetch all query
 private template QueryFetchAll(T){
-	enum QueryFetchAll = "SELECT " ~ MembersWithVal!T.join(", ") ~ " FROM " ~
-			T.stringof ~ ";";
+	enum QueryFetchAll = "SELECT __normId, " ~ MembersWithVal!T.join(", ") ~
+		" FROM " ~ T.stringof ~ ";";
 }
 
-/// Fetch by keys query
+/// Fetch by id
 private template QueryFetch(T){
-	enum QueryFetch = QueryFetchAll!T.chomp(";") ~ " WHERE " ~
-		MembersWithKey!T.join("=?, ") ~ "=?;";
+	enum QueryFetch = QueryFetchAll!T.chomp(";") ~ " WHERE __normId=?;";
 }
 
 /// Fetch by a Group query
@@ -212,10 +208,9 @@ private template QueryUpdateAll(T){
 		MembersWithVal!T.join("=?, ") ~ "=?;";
 }
 
-/// Update by Keys query
+/// Update by id query
 private template QueryUpdate(T){
-	enum QueryUpdate = QueryUpdateAll!T.chomp(";") ~ " WHERE " ~
-		MembersWithKey!T.join("=?, ") ~ "=?;";
+	enum QueryUpdate = QueryUpdateAll!T.chomp(";") ~ " WHERE __normId=?;";
 }
 
 /// Update by a Group query
@@ -229,10 +224,9 @@ private template QueryDropAll(T){
 	enum QueryDropAll = "DELETE FROM " ~ T.stringof ~ ";";
 }
 
-/// Drop by Keys query
+/// Drop by id query
 private template QueryDrop(T){
-	enum QueryDrop = QueryDropAll!T.chomp(";") ~ " WHERE " ~
-		MembersWithKey!T.join("=?, ") ~ "=?;";
+	enum QueryDrop = QueryDropAll!T.chomp(";") ~ " WHERE __normId=?;";
 }
 
 /// Drop by a Group query
@@ -248,8 +242,7 @@ private template QueryCountAll(T){
 
 /// Count by keys query
 private template QueryCount(T){
-	enum QueryCount = QueryCountAll!T.chomp(";") ~ " WHERE " ~
-		MembersWithKey!T.join("=?, ") ~ "=?;";
+	enum QueryCount = QueryCountAll!T.chomp(";") ~ " WHERE __normId=?;";
 }
 
 /// Count by a Group query
@@ -258,9 +251,189 @@ private template QueryCount(T, string name){
 		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
 }
 
+struct Resuts(T) if (is(T : DBObject)){
+private:
+	SafeResultRange _range;
+	Connection _conn;
+
+	T _create(){
+		if (_range.empty())
+			return null;
+		T obj = new T();
+		static foreach (i, name; MembersWithVal!T){
+			static if (is(typeof(__traits(getMember, T, name)) : DBObject)){
+				// is a foreign key
+				__traits(getMember, obj, name) =
+					fetch!(typeof(__traits(getMember, T, name)))(
+							_conn,
+							cast(ulong)_range.front[i]);
+			}else{
+				__traits(getMember, obj, name) =
+					cast(typeof(__traits(getMember, obj, name)))_range.front[i];
+			}
+		}
+		return obj;
+	}
+
+	this(SafeResultRange range){
+		_range = range;
+	}
+
+public:
+	@disable this();
+	bool empty(){
+		return _range.empty;
+	}
+
+	void popFront(){
+		return _range.popFront;
+	}
+
+	T front(){
+		return _create;
+	}
+}
+
+/// Creates a table
+///
+/// Returns: true if done, false if not
+bool createTable(T)(Connection conn) if (is(T : DBObject)){
+	try{
+		exec(conn, QueryCreate!T);
+		return true;
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return false;
+	}
+}
+
+/// Inserts a object into table
+///
+/// Returns: true if done, false if not
+bool insert(T)(Connection conn, ref T obj) if (is(T : DBObject)){
+	try{
+		MySQLVal[MembersWithVal!T.length] vals;
+		static foreach (i, name; MembersWithVal!T)
+			vals[i] = __traits(getMember, obj, name).toSQL;
+		if (exec(conn, QueryInsert!T, vals))
+			obj._normId = conn.lastInsertID;
+		return true;
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return false;
+	}
+}
+
+/// Updates a object
+///
+/// Returns: true if done, false if not
+bool update(T)(Connection conn, T obj){
+	try{
+		MySQLVal[MembersWithVal!T.length + 1] vals;
+		foreach (i, name; MembersWithVal!T)
+			vals[i] = __traits(getMember, obj, name).toSQL;
+		vals[$ - 1] = obj._normId.toSQL;
+		exec(conn, QueryUpdate!T, vals);
+		return true;
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return false;
+	}
+}
+
+/// Fetches a object, by matching internal id
+///
+/// Returns: Results
+T fetch(T)(Connection conn, ulong normId) if (is(T: DBObject)){
+	try{
+		return Resuts!T(query(conn, QueryFetch!T, [normId.toSQL])).front;
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return null;
+	}
+}
+
+/// Fetches all objects.
+Results!T fetch(T)(Connection conn) if (is(T : DBObject)){
+	try{
+		return Resuts!T(query(conn, QueryFetchAll!T));
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return null;
+	}
+}
+
+/// Deletes object with matching internal id
+///
+/// Returns: true if done, false if not
+bool drop(T)(Connection conn, ulong id) if (is(T : DBObject)){
+	try{
+		return exec(conn, QueryDrop!T, [normId.toSQL]);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return null;
+	}
+}
+
+/// Deletes all objects
+///
+/// Returns: true if done, false if not
+bool drop(T)(Connection conn) if (is(T : DBObject)){
+	try{
+		return exec(conn, QueryDropAll!T);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return null;
+	}
+}
+
+/// Deletes table
+///
+/// Returns: true if done, false if not
+bool dropTable(T)(Connection conn) if (is(T : DBObject)){
+	try{
+		return exec(conn, QueryDropTable!T);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return null;
+	}
+}
+
+/// Returns: count of objects in table
+ulong count(T)(Connection) if (is(T : DBObject)){
+	try{
+		SafeResultRange res = query(conn, QueryCountAll!T);
+		if (res.empty) // ? wat
+			return 0;
+		SafeRow row = res.front;
+		if (row.length == 0 || row.isNull(0)) // w a t
+			return 0;
+		return cast(ulong)row[0];
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return 0;
+	}
+}
+
+/// Returns: true if object by an id exists
+bool exists(T)(Connection conn, ulong normId) if (is(T : DBObject)){
+	try{
+		SafeResultRange res = query(conn, QueryCount!T, [normId.toSQL]);
+		if (res.empty) // ? wat
+			return false;
+		SafeRow row = res.front;
+		if (row.length == 0 || row.isNull(0)) // w a t
+			return false;
+		return cast(ulong)row[0] >= 1;
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return false;
+	}
+}
+
 unittest{
 	class A : DBObject{
-		@Val @Key @Auto @Mangle uint id;
+		@Val uint id;
 		@Val string name;
 		@Val @Group("main") @Group("username") @Size(10) string username;
 		@Val @Group("main") A other;
@@ -287,5 +460,5 @@ unittest{
 	writefln!"count: %s"(QueryCount!A);
 	writefln!"count \"main\": %s"(QueryCount!(A, "main"));
 	writefln!"count \"username\": %s"(QueryCount!(A, "username"));
-
+	writeln(typeof([5: 4, 4: 3]).stringof);
 }
