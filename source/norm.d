@@ -262,7 +262,7 @@ private template QueryCount(T, string name){
 		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
 }
 
-struct Resuts(T) if (is(T : DBObject)){
+struct Results(T) if (is(T : DBObject)){
 private:
 	SafeResultRange _range;
 	static if (ContainsForeignKey!T)
@@ -288,12 +288,15 @@ private:
 		return obj;
 	}
 
-	this(SafeResultRange range){
+	this(SafeResultRange range, Connection conn = null){
 		_range = range;
+		static if (ContainsForeignKey!T)
+			_conn = conn;
 	}
 
+	this(){}
+
 public:
-	@disable this();
 	bool empty(){
 		return _range.empty;
 	}
@@ -312,8 +315,7 @@ public:
 /// Returns: true if done, false if not
 bool createTable(T)(Connection conn) if (is(T : DBObject)){
 	try{
-		exec(conn, QueryCreate!T);
-		return true;
+		return exec(conn, QueryCreate!T) >= 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -328,8 +330,9 @@ bool insert(T)(Connection conn, ref T obj) if (is(T : DBObject)){
 		MySQLVal[MembersWithVal!T.length] vals;
 		static foreach (i, name; MembersWithVal!T)
 			vals[i] = __traits(getMember, obj, name).toSQL;
-		if (exec(conn, QueryInsert!T, vals))
-			obj._normId = conn.lastInsertID;
+		if (exec(conn, QueryInsert!T, vals) == 0)
+			return false;
+		obj._normId = conn.lastInsertID;
 		return true;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
@@ -346,11 +349,44 @@ bool update(T)(Connection conn, T obj){
 		foreach (i, name; MembersWithVal!T)
 			vals[i] = __traits(getMember, obj, name).toSQL;
 		vals[$ - 1] = obj._normId.toSQL;
-		exec(conn, QueryUpdate!T, vals);
-		return true;
+		return exec(conn, QueryUpdate!T, vals) >= 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
+	}
+}
+
+/// Updates all objects (i dont know why you would want to)
+///
+/// Returns: number of objects updated
+ulong updateAll(T)(Connection conn, T obj){
+	try{
+		MySQLVal[MembersWithVal!T.length + 1] vals;
+		foreach (i, name; MembersWithVal!T)
+			vals[i] = __traits(getMember, obj, name).toSQL;
+		return exec(conn, QueryUpdateAll!T, vals);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return 0;
+	}
+}
+
+/// update by matching with a group name
+///
+/// Returns: number of objects updated
+ulong update(string gName, T)(Connection conn, T match, T obj) if (
+		is(T : DBObject)){
+	try{
+		MySQLVal[MembersWithVal!T.length + MembersWithGroup!(T, gName).length] vals;
+		static foreach (i, name; MembersWithVal!T)
+			vals[i] = __traits(getMember, obj, name).toSQL;
+		static foreach (i, name; MembersWithGroup!(T, gName))
+			vals[MembersWithVal!T.length + i] =
+				__traits(getMember, match, name).toSQL;
+		return exec(conn, QueryUpdate!(T, gName), vals);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return 0;
 	}
 }
 
@@ -359,20 +395,38 @@ bool update(T)(Connection conn, T obj){
 /// Returns: Results
 T fetch(T)(Connection conn, ulong normId) if (is(T: DBObject)){
 	try{
-		return Resuts!T(query(conn, QueryFetch!T, [normId.toSQL])).front;
+		return Results!T(query(conn, QueryFetch!T, [normId.toSQL])).front;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return null;
 	}
 }
 
-/// Fetches all objects.
-Results!T fetch(T)(Connection conn) if (is(T : DBObject)){
+/// Fetches by matching with a group
+///
+/// Returns: Results
+Results!T fetch(string gName, T)(Connection conn, T match) if (
+		is(T : DBObject)){
 	try{
-		return Resuts!T(query(conn, QueryFetchAll!T));
+		MySQLVal[MembersWithGroup!(T, gName).length] vals;
+		static foreach (i, name; MembersWithGroup!(T, gName))
+			vals[i] = __traits(getMember, match, name).toSQL;
+		return Results!T(query(conn, QueryFetch!(T, gName), vals), conn);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
-		return null;
+		return Results!T;
+	}
+}
+
+/// Fetches all objects.
+///
+/// Returns: Results
+Results!T fetch(T)(Connection conn) if (is(T : DBObject)){
+	try{
+		return Results!T(query(conn, QueryFetchAll!T), conn);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return Results!T;
 	}
 }
 
@@ -381,22 +435,37 @@ Results!T fetch(T)(Connection conn) if (is(T : DBObject)){
 /// Returns: true if done, false if not
 bool drop(T)(Connection conn, ulong id) if (is(T : DBObject)){
 	try{
-		return exec(conn, QueryDrop!T, [normId.toSQL]);
+		return exec(conn, QueryDrop!T, [normId.toSQL]) >= 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
-		return null;
+		return false;
+	}
+}
+
+/// Deletes object(s) matcing a group
+///
+/// Returns: number of objects deleted
+ulong drop(string gName, T)(Connection conn, T match) if (is(T : DBObject)){
+	try{
+		MySQLVal[MembersWithGroup!(T, gName).length] vals;
+		static foreach (i, name; MembersWithGroup!(T, gName))
+			vals[i] = __traits(getMember, match, name).toSQL;
+		return exec(conn, QueryDrop!(T, gName), vals);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return 0;
 	}
 }
 
 /// Deletes all objects
 ///
-/// Returns: true if done, false if not
-bool drop(T)(Connection conn) if (is(T : DBObject)){
+/// Returns: number of objects deleted
+ulong drop(T)(Connection conn) if (is(T : DBObject)){
 	try{
 		return exec(conn, QueryDropAll!T);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
-		return null;
+		return 0;
 	}
 }
 
@@ -408,14 +477,33 @@ bool dropTable(T)(Connection conn) if (is(T : DBObject)){
 		return exec(conn, QueryDropTable!T);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
-		return null;
+		return false;
 	}
 }
 
 /// Returns: count of objects in table
-ulong count(T)(Connection) if (is(T : DBObject)){
+ulong count(T)(Connection conn) if (is(T : DBObject)){
 	try{
 		SafeResultRange res = query(conn, QueryCountAll!T);
+		if (res.empty) // ? wat
+			return 0;
+		SafeRow row = res.front;
+		if (row.length == 0 || row.isNull(0)) // w a t
+			return 0;
+		return cast(ulong)row[0];
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return 0;
+	}
+}
+
+/// Returns: count of objects by a group
+ulong count(string gName, T)(Connection conn, T match) if (is(T : DBObject)){
+	try{
+		MySQLVal[MembersWithGroup!(T, gName)] vals;
+		static foreach (i, name; MembersWithGroup!(T, gName))
+			vals[i] = __traits(getMember, match, name).toSQL;
+		SafeResultRange res = query(conn, QueryCount!(T, gName));
 		if (res.empty) // ? wat
 			return 0;
 		SafeRow row = res.front;
@@ -444,33 +532,33 @@ bool exists(T)(Connection conn, ulong normId) if (is(T : DBObject)){
 	}
 }
 
+/// Returns: true if object exists
+bool exists(T)(Connection conn, T obj) if (is(T : DBObject)){
+	return exists!T(conn, obj._normId);
+}
+
 unittest{
 	class A : DBObject{
-		@Val uint id;
+		@Val @Group("username") @Size(10) string username;
 		@Val string name;
-		@Val @Group("main") @Group("username") @Size(10) string username;
-		@Val @Group("main") A other;
+		@Val A other;
 	}
 	writefln!"create: %s"(QueryCreate!A);
 	writefln!"insert: %s"(QueryInsert!A);
 
 	writefln!"fetchAll: %s"(QueryFetchAll!A);
 	writefln!"fetch: %s"(QueryFetch!A);
-	writefln!"fetch \"main\": %s"(QueryFetch!(A, "main"));
-	writefln!"fetch \"username\": %s"(QueryFetch!(A, "username"));
+	writefln!"fetch by \"username\": %s"(QueryFetch!(A, "username"));
 
 	writefln!"updateAll: %s"(QueryUpdateAll!A);
 	writefln!"update: %s"(QueryUpdate!A);
-	writefln!"update \"main\": %s"(QueryUpdate!(A, "main"));
-	writefln!"update \"username\": %s"(QueryUpdate!(A, "username"));
+	writefln!"update by \"username\": %s"(QueryUpdate!(A, "username"));
 
 	writefln!"dropAll: %s"(QueryDropAll!A);
 	writefln!"drop: %s"(QueryDrop!A);
-	writefln!"drop \"main\": %s"(QueryDrop!(A, "main"));
-	writefln!"drop \"username\": %s"(QueryDrop!(A, "username"));
+	writefln!"drop by \"username\": %s"(QueryDrop!(A, "username"));
 
 	writefln!"countAll: %s"(QueryCountAll!A);
 	writefln!"count: %s"(QueryCount!A);
-	writefln!"count \"main\": %s"(QueryCount!(A, "main"));
-	writefln!"count \"username\": %s"(QueryCount!(A, "username"));
+	writefln!"count by \"username\": %s"(QueryCount!(A, "username"));
 }
