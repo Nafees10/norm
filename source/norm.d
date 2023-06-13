@@ -68,6 +68,18 @@ private template Groups(T){
 	}
 }
 
+/// true if a DBObject refers to at least 1 other
+private template ContainsForeignKey(T) if (is(T : DBObject)){
+	enum ContainsForeignKey = isComplexObject();
+	private bool isComplexObject(){
+		static foreach (sym; getSymbolsByUDA!(T, Val)){
+			static if (is(typeof(sym) : DBObject))
+				return true;
+		}
+		return false;
+	}
+}
+
 /// SQL types
 private template SQLTypeMap(T){
 	static if (is (T == bool))
@@ -169,7 +181,6 @@ private template QueryDropTable(T) if (is(T : DBObject)){
 	enum QueryDropTable = "DROP TABLE " ~ T.stringof ~ ";";
 }
 
-
 /// Insert query
 private template QueryInsert(T) if (is(T : DBObject)){
 	enum QueryInsert = generateQuery;
@@ -254,14 +265,16 @@ private template QueryCount(T, string name){
 struct Resuts(T) if (is(T : DBObject)){
 private:
 	SafeResultRange _range;
-	Connection _conn;
+	static if (ContainsForeignKey!T)
+		Connection _conn;
 
 	T _create(){
 		if (_range.empty())
 			return null;
 		T obj = new T();
 		static foreach (i, name; MembersWithVal!T){
-			static if (is(typeof(__traits(getMember, T, name)) : DBObject)){
+			static if (ContainsForeignKey!T &&
+					is(typeof(__traits(getMember, T, name)) : DBObject)){
 				// is a foreign key
 				__traits(getMember, obj, name) =
 					fetch!(typeof(__traits(getMember, T, name)))(
@@ -460,5 +473,4 @@ unittest{
 	writefln!"count: %s"(QueryCount!A);
 	writefln!"count \"main\": %s"(QueryCount!(A, "main"));
 	writefln!"count \"username\": %s"(QueryCount!(A, "username"));
-	writeln(typeof([5: 4, 4: 3]).stringof);
 }
