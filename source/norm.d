@@ -21,20 +21,15 @@ struct Size{ ulong len; }
 /// Fetch group
 struct Group{ string name; }
 
-/// names of members with a specific UDA
-private template MemberNamesByUDA(T, UDA){
-	enum MemberNamesByUDA = getMemberNamesByUDA;
-	private string[] getMemberNamesByUDA(){
+/// Member names that have @Val
+private template MembersWithVal(T){
+	enum MembersWithVal = getMembersWithVal();
+	private string[] getMembersWithVal(){
 		string[] ret;
-		static foreach (sym; getSymbolsByUDA!(T, UDA))
+		static foreach (sym; getSymbolsByUDA!(T, Val))
 			ret ~= sym.stringof;
 		return ret;
 	}
-}
-
-/// Member names that have @Val
-private template MembersWithVal(T){
-	enum MembersWithVal = MemberNamesByUDA!(T, Val);
 }
 
 /// Member names that are of a specifc @Group name
@@ -72,11 +67,25 @@ private template Groups(T){
 private template ContainsForeignKey(T) if (is(T : DBObject)){
 	enum ContainsForeignKey = isComplexObject();
 	private bool isComplexObject(){
+		bool ret = false;
 		static foreach (sym; getSymbolsByUDA!(T, Val)){
 			static if (is(typeof(sym) : DBObject))
-				return true;
+				ret = true;
 		}
-		return false;
+		return ret;
+	}
+}
+
+/// Member names that are foreign keys
+private template MembersWithFKey(T) if (is(T : DBObject)){
+	enum MembersWithFKey = getMembersWithFKey();
+	private string[] getMembersWithFKey(){
+		string[] ret;
+		static foreach (sym; getSymbolsByUDA!(T, Val)){
+			static if (is(typeof(sym) : DBObject))
+				ret ~= sym.stringof;
+		}
+		return ret;
 	}
 }
 
@@ -157,6 +166,11 @@ abstract class DBObject{
 private:
 	ulong _normId;
 
+	/// unique id
+	@property ulong id(ulong val) pure {
+		return _normId = val;
+	}
+
 public:
 	/// unique id
 	@property ulong id() pure const {
@@ -172,6 +186,12 @@ private template QueryCreate(T) if (is(T : DBObject)){
 			"__normId BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ";
 		static foreach (sym; getSymbolsByUDA!(T, Val))
 			ret ~= sym.stringof ~ " " ~ SQLType!sym ~ ", ";
+		static if (ContainsForeignKey!T){
+			static foreach (name; MembersWithFKey!T){
+				ret ~= "FOREIGN KEY (" ~ name ~ ") REFERENCES " ~
+					typeof(__traits(getMember, T, name)).stringof ~ "(__normId), ";
+			}
+		}
 		ret = ret.chomp(", ");
 		return ret ~ ");";
 	}
@@ -273,17 +293,18 @@ private:
 		if (_range.empty())
 			return null;
 		T obj = new T();
+		obj.id = cast(ulong)_range.front[0];
 		static foreach (i, name; MembersWithVal!T){
 			static if (ContainsForeignKey!T &&
 					is(typeof(__traits(getMember, T, name)) : DBObject)){
 				// is a foreign key
-				__traits(getMember, obj, name) =
-					fetch!(typeof(__traits(getMember, T, name)))(
-							_conn,
-							cast(ulong)_range.front[i]);
+				if (!_range.front.isNull(i + 1))
+					__traits(getMember, obj, name) =
+						fetch!(typeof(__traits(getMember, T, name)))(
+								_conn, cast(ulong)_range.front[i + 1]);
 			}else{
 				__traits(getMember, obj, name) =
-					cast(typeof(__traits(getMember, obj, name)))_range.front[i];
+					cast(typeof(__traits(getMember, T, name)))_range.front[i + 1];
 			}
 		}
 		return obj;
@@ -294,8 +315,6 @@ private:
 		static if (ContainsForeignKey!T)
 			_conn = conn;
 	}
-
-	this(){}
 
 public:
 	bool empty(){
@@ -316,7 +335,8 @@ public:
 /// Returns: true if done, false if not
 bool createTable(T)(Connection conn) if (is(T : DBObject)){
 	try{
-		return exec(conn, QueryCreate!T) >= 1;
+		exec(conn, QueryCreate!T);
+		return true;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -333,7 +353,7 @@ bool insert(T)(Connection conn, ref T obj) if (is(T : DBObject)){
 			vals[i] = __traits(getMember, obj, name).toSQL;
 		if (exec(conn, QueryInsert!T, vals) == 0)
 			return false;
-		obj._normId = conn.lastInsertID;
+		obj.id = conn.lastInsertID;
 		return true;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
@@ -347,9 +367,9 @@ bool insert(T)(Connection conn, ref T obj) if (is(T : DBObject)){
 bool update(T)(Connection conn, T obj){
 	try{
 		MySQLVal[MembersWithVal!T.length + 1] vals;
-		foreach (i, name; MembersWithVal!T)
+		static foreach (i, name; MembersWithVal!T)
 			vals[i] = __traits(getMember, obj, name).toSQL;
-		vals[$ - 1] = obj._normId.toSQL;
+		vals[$ - 1] = obj.id.toSQL;
 		return exec(conn, QueryUpdate!T, vals) >= 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
@@ -375,36 +395,19 @@ ulong updateAll(T)(Connection conn, T obj){
 /// update by matching with a group name
 ///
 /// Returns: number of objects updated
-ulong update(string gName, T)(Connection conn, T match, T obj)
-		if (is(T : DBObject)){
-	try{
-		MySQLVal[MembersWithVal!T.length + MembersWithGroup!(T, gName).length] vals;
-		static foreach (i, name; MembersWithVal!T)
-			vals[i] = __traits(getMember, obj, name).toSQL;
-		static foreach (i, name; MembersWithGroup!(T, gName))
-			vals[MembersWithVal!T.length + i] =
-				__traits(getMember, match, name).toSQL;
-		return exec(conn, QueryUpdate!(T, gName), vals);
-	}catch (Exception e){
-		debug stderr.writeln(e.msg);
-		return 0;
-	}
-}
-
-/// ditto
 ulong update(T, string gName)(Connection conn, T obj, ...)
 		if (is(T : DBObject)){
 	enum gCount = MembersWithGroup!(T, gName).length;
-	static if (_arguments.length != gCount)
-		static assert(false, "invalid number of parameters for group matching");
+	if (_arguments.length != gCount)
+		assert(false, "invalid number of parameters for group matching");
 
 	try{
-		MySQLVal[MembersWithVal!T + gCount] vals;
-		foreach (i, name; MembersWithVal!T)
+		MySQLVal[MembersWithVal!T.length + gCount] vals;
+		static foreach (i, name; MembersWithVal!T)
 			vals[i] = __traits(getMember, obj, name).toSQL;
-		foreach (i, name; MembersWithGroup!(T, gName)){
-			static if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
-				static assert(false, "invalid type for " ~ name);
+		static foreach (i, name; MembersWithGroup!(T, gName)){
+			if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
+				assert(false, "invalid type for " ~ name);
 			vals[gCount + i] =
 				va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
 		}
@@ -431,20 +434,6 @@ T fetch(T)(Connection conn, ulong id) if (is(T: DBObject)){
 /// Fetches by matching with a group
 ///
 /// Returns: Results
-Results!T fetch(string gName, T)(Connection conn, T match) if (
-		is(T : DBObject)){
-	try{
-		MySQLVal[MembersWithGroup!(T, gName).length] vals;
-		static foreach (i, name; MembersWithGroup!(T, gName))
-			vals[i] = __traits(getMember, match, name).toSQL;
-		return Results!T(query(conn, QueryFetch!(T, gName), vals), conn);
-	}catch (Exception e){
-		debug stderr.writeln(e.msg);
-		return Results!T;
-	}
-}
-
-/// ditto
 Results!T fetch(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
 	static if (_arguments.length != MembersWithGroup!(T, gName))
 		static assert(false, "invalid number of parameters for group matching");
@@ -460,7 +449,7 @@ Results!T fetch(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
 		return Results!T(query(conn, QueryFetch!(T, gName), vals), conn);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
-		return Results!T;
+		return Results!T();
 	}
 }
 
@@ -472,7 +461,7 @@ Results!T fetch(T)(Connection conn) if (is(T : DBObject)){
 		return Results!T(query(conn, QueryFetchAll!T), conn);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
-		return Results!T;
+		return Results!T();
 	}
 }
 
@@ -491,19 +480,6 @@ bool drop(T)(Connection conn, ulong id) if (is(T : DBObject)){
 /// Deletes object(s) matcing a group
 ///
 /// Returns: number of objects deleted
-ulong drop(string gName, T)(Connection conn, T match) if (is(T : DBObject)){
-	try{
-		MySQLVal[MembersWithGroup!(T, gName).length] vals;
-		static foreach (i, name; MembersWithGroup!(T, gName))
-			vals[i] = __traits(getMember, match, name).toSQL;
-		return exec(conn, QueryDrop!(T, gName), vals);
-	}catch (Exception e){
-		debug stderr.writeln(e.msg);
-		return 0;
-	}
-}
-
-/// ditto
 ulong drop(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
 	static if (_arguments.length != MembersWithGroup!(T, gName))
 		static assert(false, "invalid number of parameters for group matching");
@@ -540,7 +516,8 @@ ulong drop(T)(Connection conn) if (is(T : DBObject)){
 /// Returns: true if done, false if not
 bool dropTable(T)(Connection conn) if (is(T : DBObject)){
 	try{
-		return exec(conn, QueryDropTable!T);
+		exec(conn, QueryDropTable!T);
+		return true;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -564,25 +541,6 @@ ulong count(T)(Connection conn) if (is(T : DBObject)){
 }
 
 /// Returns: count of objects by a group
-ulong count(string gName, T)(Connection conn, T match) if (is(T : DBObject)){
-	try{
-		MySQLVal[MembersWithGroup!(T, gName)] vals;
-		static foreach (i, name; MembersWithGroup!(T, gName))
-			vals[i] = __traits(getMember, match, name).toSQL;
-		SafeResultRange res = query(conn, QueryCount!(T, gName));
-		if (res.empty) // ? wat
-			return 0;
-		SafeRow row = res.front;
-		if (row.length == 0 || row.isNull(0)) // w a t
-			return 0;
-		return cast(ulong)row[0];
-	}catch (Exception e){
-		debug stderr.writeln(e.msg);
-		return 0;
-	}
-}
-
-/// ditto
 ulong count(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
 	static if (_arguments.length != MembersWithGroup!(T, gName))
 		static assert(false, "invalid number of parameters for group matching");
@@ -620,31 +578,45 @@ bool exists(T)(Connection conn, ulong id) if (is(T : DBObject)){
 
 /// Returns: true if object exists
 bool exists(T)(Connection conn, T obj) if (is(T : DBObject)){
-	return exists!T(conn, obj._normId);
+	return exists!T(conn, obj.id);
 }
 
 unittest{
-	class A : DBObject{
-		@Val @Group("username") @Size(10) string username;
-		@Val string name;
-		@Val A other;
+	class User : DBObject{
+		public:
+			enum Type{
+				User,
+				Admin,
+				Management
+			}
+			@Val @Size(40) @Group("username") string username;
+			@Val @Group("type") Type type;
 	}
-	writefln!"create: %s"(QueryCreate!A);
-	writefln!"insert: %s"(QueryInsert!A);
 
-	writefln!"fetchAll: %s"(QueryFetchAll!A);
-	writefln!"fetch: %s"(QueryFetch!A);
-	writefln!"fetch by \"username\": %s"(QueryFetch!(A, "username"));
+	class Post : DBObject{
+		public:
+			@Val DateTime time;
+			@Val string title;
+			@Val string content;
+			@Val @Group("author") User author;
+	}
 
-	writefln!"updateAll: %s"(QueryUpdateAll!A);
-	writefln!"update: %s"(QueryUpdate!A);
-	writefln!"update by \"username\": %s"(QueryUpdate!(A, "username"));
+	writefln!"create: %s"(QueryCreate!User);
+	writefln!"insert: %s"(QueryInsert!User);
 
-	writefln!"dropAll: %s"(QueryDropAll!A);
-	writefln!"drop: %s"(QueryDrop!A);
-	writefln!"drop by \"username\": %s"(QueryDrop!(A, "username"));
+	writefln!"fetchAll: %s"(QueryFetchAll!User);
+	writefln!"fetch: %s"(QueryFetch!User);
+	writefln!"fetch by \"username\": %s"(QueryFetch!(User, "username"));
 
-	writefln!"countAll: %s"(QueryCountAll!A);
-	writefln!"count: %s"(QueryCount!A);
-	writefln!"count by \"username\": %s"(QueryCount!(A, "username"));
+	writefln!"updateAll: %s"(QueryUpdateAll!User);
+	writefln!"update: %s"(QueryUpdate!User);
+	writefln!"update by \"username\": %s"(QueryUpdate!(User, "username"));
+
+	writefln!"dropAll: %s"(QueryDropAll!User);
+	writefln!"drop: %s"(QueryDrop!User);
+	writefln!"drop by \"username\": %s"(QueryDrop!(User, "username"));
+
+	writefln!"countAll: %s"(QueryCountAll!User);
+	writefln!"count: %s"(QueryCount!User);
+	writefln!"count by \"username\": %s"(QueryCount!(User, "username"));
 }
