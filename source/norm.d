@@ -154,10 +154,11 @@ MySQLVal toSQL(From)(From val) pure {
 
 /// Parent class for all DBObjects
 abstract class DBObject{
+private:
 	ulong _normId;
 
 public:
-	/// Internal unique Id
+	/// unique id
 	@property ulong id() pure const {
 		return _normId;
 	}
@@ -374,8 +375,8 @@ ulong updateAll(T)(Connection conn, T obj){
 /// update by matching with a group name
 ///
 /// Returns: number of objects updated
-ulong update(string gName, T)(Connection conn, T match, T obj) if (
-		is(T : DBObject)){
+ulong update(string gName, T)(Connection conn, T match, T obj)
+		if (is(T : DBObject)){
 	try{
 		MySQLVal[MembersWithVal!T.length + MembersWithGroup!(T, gName).length] vals;
 		static foreach (i, name; MembersWithVal!T)
@@ -390,12 +391,37 @@ ulong update(string gName, T)(Connection conn, T match, T obj) if (
 	}
 }
 
+/// ditto
+ulong update(T, string gName)(Connection conn, T obj, ...)
+		if (is(T : DBObject)){
+	enum gCount = MembersWithGroup!(T, gName).length;
+	static if (_arguments.length != gCount)
+		static assert(false, "invalid number of parameters for group matching");
+
+	try{
+		MySQLVal[MembersWithVal!T + gCount] vals;
+		foreach (i, name; MembersWithVal!T)
+			vals[i] = __traits(getMember, obj, name).toSQL;
+		foreach (i, name; MembersWithGroup!(T, gName)){
+			static if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
+				static assert(false, "invalid type for " ~ name);
+			vals[gCount + i] =
+				va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
+		}
+
+		return exec(conn, QueryUpdate!(T, gName), vals);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return 0;
+	}
+}
+
 /// Fetches a object, by matching internal id
 ///
 /// Returns: Results
-T fetch(T)(Connection conn, ulong normId) if (is(T: DBObject)){
+T fetch(T)(Connection conn, ulong id) if (is(T: DBObject)){
 	try{
-		return Results!T(query(conn, QueryFetch!T, [normId.toSQL])).front;
+		return Results!T(query(conn, QueryFetch!T, [id.toSQL])).front;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return null;
@@ -411,6 +437,26 @@ Results!T fetch(string gName, T)(Connection conn, T match) if (
 		MySQLVal[MembersWithGroup!(T, gName).length] vals;
 		static foreach (i, name; MembersWithGroup!(T, gName))
 			vals[i] = __traits(getMember, match, name).toSQL;
+		return Results!T(query(conn, QueryFetch!(T, gName), vals), conn);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return Results!T;
+	}
+}
+
+/// ditto
+Results!T fetch(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
+	static if (_arguments.length != MembersWithGroup!(T, gName))
+		static assert(false, "invalid number of parameters for group matching");
+
+	try{
+		MySQLVal[MembersWithGroup!(T, gName)] vals;
+		foreach (i, name; MembersWithGroup!(T, gName)){
+			static if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
+				static assert(false, "invalid type for " ~ name);
+			vals[i] = va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
+		}
+
 		return Results!T(query(conn, QueryFetch!(T, gName), vals), conn);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
@@ -435,7 +481,7 @@ Results!T fetch(T)(Connection conn) if (is(T : DBObject)){
 /// Returns: true if done, false if not
 bool drop(T)(Connection conn, ulong id) if (is(T : DBObject)){
 	try{
-		return exec(conn, QueryDrop!T, [normId.toSQL]) >= 1;
+		return exec(conn, QueryDrop!T, [id.toSQL]) >= 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -450,6 +496,26 @@ ulong drop(string gName, T)(Connection conn, T match) if (is(T : DBObject)){
 		MySQLVal[MembersWithGroup!(T, gName).length] vals;
 		static foreach (i, name; MembersWithGroup!(T, gName))
 			vals[i] = __traits(getMember, match, name).toSQL;
+		return exec(conn, QueryDrop!(T, gName), vals);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return 0;
+	}
+}
+
+/// ditto
+ulong drop(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
+	static if (_arguments.length != MembersWithGroup!(T, gName))
+		static assert(false, "invalid number of parameters for group matching");
+
+	try{
+		MySQLVal[MembersWithGroup!(T, gName)] vals;
+		foreach (i, name; MembersWithGroup!(T, gName)){
+			static if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
+				static assert(false, "invalid type for " ~ name);
+			vals[i] = va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
+		}
+
 		return exec(conn, QueryDrop!(T, gName), vals);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
@@ -516,10 +582,30 @@ ulong count(string gName, T)(Connection conn, T match) if (is(T : DBObject)){
 	}
 }
 
-/// Returns: true if object by an id exists
-bool exists(T)(Connection conn, ulong normId) if (is(T : DBObject)){
+/// ditto
+ulong count(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
+	static if (_arguments.length != MembersWithGroup!(T, gName))
+		static assert(false, "invalid number of parameters for group matching");
+
 	try{
-		SafeResultRange res = query(conn, QueryCount!T, [normId.toSQL]);
+		MySQLVal[MembersWithGroup!(T, gName)] vals;
+		foreach (i, name; MembersWithGroup!(T, gName)){
+			static if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
+				static assert(false, "invalid type for " ~ name);
+			vals[i] = va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
+		}
+
+		return exec(conn, QueryCount!(T, gName), vals);
+	}catch (Exception e){
+		debug stderr.writeln(e.msg);
+		return 0;
+	}
+}
+
+/// Returns: true if object by an id exists
+bool exists(T)(Connection conn, ulong id) if (is(T : DBObject)){
+	try{
+		SafeResultRange res = query(conn, QueryCount!T, [id.toSQL]);
 		if (res.empty) // ? wat
 			return false;
 		SafeRow row = res.front;
