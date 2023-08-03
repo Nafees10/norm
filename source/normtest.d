@@ -74,7 +74,8 @@ void test(){
 	admin.username = "aadmin";
 	assert(update!(User, "username")(conn, admin, "admin"));
 
-	writeln("waiting.."); readln;
+	writeln("I should print exactly one \"MySQL error\" now");
+	writeln("waiting for enter press.."); readln;
 	assert (dropTable!User(conn) == false);
 	assert (dropTable!Post(conn));
 	assert (dropTable!User(conn));

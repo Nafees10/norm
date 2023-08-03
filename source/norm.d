@@ -126,11 +126,10 @@ private template SQLTypeMap(T){
 }
 
 private template SQLType(alias sym){
-	static if (hasUDA!(sym, Size) && (
-				is (typeof(sym) == string) ||
-				is (typeof(sym) == char[])))
-		enum SQLType = "VARCHAR(" ~ getUDAs!(sym, Size)[0].
-			len.to!string ~ ")";
+	static if (hasUDA!(sym, Size) &&
+			(is (typeof(sym) == string) ||
+			 is (typeof(sym) == char[])))
+		enum SQLType = "VARCHAR(" ~ getUDAs!(sym, Size)[0].len.to!string ~ ")";
 	else
 		enum SQLType = SQLTypeMap!(typeof(sym));
 }
@@ -283,7 +282,7 @@ private template QueryCount(T, string name){
 		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
 }
 
-struct Results(T) if (is(T : DBObject)){
+public struct Results(T) if (is(T : DBObject)){
 private:
 	SafeResultRange _range;
 	static if (ContainsForeignKey!T)
@@ -294,7 +293,7 @@ private:
 			return null;
 		T obj = new T();
 		obj.id = cast(ulong)_range.front[0];
-		static foreach (i, name; MembersWithVal!T){
+		static foreach (i, name; MembersWithVal!T){ // the i + 1 is coz 0 is normId
 			static if (ContainsForeignKey!T &&
 					is(typeof(__traits(getMember, T, name)) : DBObject)){
 				// is a foreign key
@@ -394,24 +393,25 @@ ulong updateAll(T)(Connection conn, T obj){
 
 /// update by matching with a group name
 ///
+/// Parameters are fields of that group, in the order they are defined.
+/// Note that although matching is done by group fields, any object that matches
+/// is updated whole
+///
 /// Returns: number of objects updated
-ulong update(T, string gName)(Connection conn, T obj, ...)
-		if (is(T : DBObject)){
-	enum gCount = MembersWithGroup!(T, gName).length;
-	if (_arguments.length != gCount)
-		assert(false, "invalid number of parameters for group matching");
+ulong update(T, string gName, Types...)(Connection conn, T obj, Types args) if (
+		is (T : DBObject)){
+	static assert(Types.length == MembersWithGroup!(T, gName).length,
+			"unexpected number of arguments against group field members");
+	static foreach (i, name; MembersWithGroup!(T, gName))
+		static assert(is (typeof(__traits(getMember, T, name)) : Types[i]),
+				"Types do not match group field member types");
 
 	try{
-		MySQLVal[MembersWithVal!T.length + gCount] vals;
+		MySQLVal[MembersWithVal!T.length + MembersWithGroup!(T, gName).length] vals;
 		static foreach (i, name; MembersWithVal!T)
 			vals[i] = __traits(getMember, obj, name).toSQL;
-		static foreach (i, name; MembersWithGroup!(T, gName)){
-			if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
-				assert(false, "invalid type for " ~ name);
-			vals[gCount + i] =
-				va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
-		}
-
+		static foreach (i; 0 .. args.length)
+			vals[MembersWithVal!T.length + i] = args[i].toSQL;
 		return exec(conn, QueryUpdate!(T, gName), vals);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
@@ -434,17 +434,18 @@ T fetch(T)(Connection conn, ulong id) if (is(T: DBObject)){
 /// Fetches by matching with a group
 ///
 /// Returns: Results
-Results!T fetch(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
-	static if (_arguments.length != MembersWithGroup!(T, gName))
-		static assert(false, "invalid number of parameters for group matching");
+Results!T fetch(T, string gName, Types...)(Connection conn, Types args) if (
+		is(T : DBObject)){
+	static assert(Types.length == MembersWithGroup!(T, gName).length,
+			"unexpected number of arguments against group field members");
+	static foreach (i, name; MembersWithGroup!(T, gName))
+		static assert(is (typeof(__traits(getMember, T, name)) : Types[i]),
+				"types do not match group field member types");
 
 	try{
 		MySQLVal[MembersWithGroup!(T, gName)] vals;
-		foreach (i, name; MembersWithGroup!(T, gName)){
-			static if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
-				static assert(false, "invalid type for " ~ name);
-			vals[i] = va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
-		}
+		static foreach (i; 0 .. args.length)
+			vals[i] = args[i].toSQL;
 
 		return Results!T(query(conn, QueryFetch!(T, gName), vals), conn);
 	}catch (Exception e){
@@ -480,17 +481,18 @@ bool drop(T)(Connection conn, ulong id) if (is(T : DBObject)){
 /// Deletes object(s) matcing a group
 ///
 /// Returns: number of objects deleted
-ulong drop(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
-	static if (_arguments.length != MembersWithGroup!(T, gName))
-		static assert(false, "invalid number of parameters for group matching");
+ulong drop(T, string gName, Types...)(Connection conn, Types args) if (
+			is(T : DBObject)){
+	static assert(Types.length == MembersWithGroup!(T, gName).length,
+			"unexpected number of arguments against group field members");
+	static foreach (i, name; MembersWithGroup!(T, gName))
+		static assert(is (typeof(__traits(getMember, T, name)) : Types[i]),
+				"types do not match group field member types");
 
 	try{
 		MySQLVal[MembersWithGroup!(T, gName)] vals;
-		foreach (i, name; MembersWithGroup!(T, gName)){
-			static if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
-				static assert(false, "invalid type for " ~ name);
-			vals[i] = va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
-		}
+		static foreach (i; 0 .. args.length)
+			vals[i] = args[i].toSQL;
 
 		return exec(conn, QueryDrop!(T, gName), vals);
 	}catch (Exception e){
