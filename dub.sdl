@@ -1,5 +1,5 @@
 name "norm"
-description "a simple ORM for MySQL"
+description "a simple ORM for D for mariadb/mysql"
 authors "nafees"
 copyright "Copyright © 2023, nafees"
 license "MIT"
