@@ -5,3 +5,12 @@ copyright "Copyright © 2023, nafees"
 license "MIT"
 dependency "utils" version="~>0.7.0"
 dependency "mysql-native" version="~>3.2.4"
+
+configuration "default"{
+	targetType "library"
+}
+
+configuration "test"{
+	versions "norm_test"
+	targetType "executable"
+}
