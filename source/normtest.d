@@ -6,8 +6,6 @@ import std.stdio;
 import std.datetime;
 import std.conv : to;
 
-import mysql.safe;
-
 enum CONN_STR = "host=localhost;port=3306;user=dummy;pwd=dummy;db=dummy";
 
 class User : DBObject{
@@ -53,7 +51,7 @@ public:
 }
 
 void test(){
-	auto conn = new Connection(CONN_STR);
+	auto conn = connect(CONN_STR);
 
 	assert (createTable!User(conn));
 	assert (createTable!Post(conn));

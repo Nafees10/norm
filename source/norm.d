@@ -282,6 +282,14 @@ private template QueryCount(T, string name){
 		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
 }
 
+/// Connects using a connection string
+///
+/// A connection string looks like:
+/// `"host=localhost;port=3306;user=dummy;pwd=dummy;db=dummy"`
+Connection connect(string str){
+	return new Connection(str);
+}
+
 public struct Results(T) if (is(T : DBObject)){
 private:
 	SafeResultRange _range;
