@@ -551,17 +551,18 @@ ulong count(T)(Connection conn) if (is(T : DBObject)){
 }
 
 /// Returns: count of objects by a group
-ulong count(T, string gName)(Connection conn, ...) if (is(T : DBObject)){
-	static if (_arguments.length != MembersWithGroup!(T, gName))
-		static assert(false, "invalid number of parameters for group matching");
+ulong count(T, string gName, Types...)(Connection conn, Types args) if (
+			is(T : DBObject)){
+	static assert(Types.length == MembersWithGroup!(T, gName).length,
+			"unexpected number of arguments against group field members");
+	static foreach (i, name; MembersWithGroup!(T, gName))
+		static assert(is (typeof(__traits(getMember, T, name)) : Types[i]),
+				"Types do not match group field member types");
 
 	try{
 		MySQLVal[MembersWithGroup!(T, gName)] vals;
-		foreach (i, name; MembersWithGroup!(T, gName)){
-			static if (_arguments[i] != typeid(typeof(__traits(getMember, T, name))))
-				static assert(false, "invalid type for " ~ name);
-			vals[i] = va_arg!(typeof(__traits(getMember, T, name)))(_argptr).toSQL;
-		}
+		foreach (i; 0 .. args.length)
+			vals[i] = args[i].toSQL;
 
 		return exec(conn, QueryCount!(T, gName), vals);
 	}catch (Exception e){
