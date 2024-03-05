@@ -1,16 +1,25 @@
 name "norm"
-description "a simple ORM for D for mariadb/mysql"
+description "simple ORM for D using DDBC"
 authors "nafees"
-copyright "Copyright © 2023, nafees"
+copyright "Copyright © 2023-2024, nafees"
 license "MIT"
 dependency "utils" version="~>0.7.0"
-dependency "mysql-native" version="~>3.2.4"
-
-configuration "default"{
+dependency "ddbc" version="~>0.6.0"
+configuration "default" {
 	targetType "library"
+	subConfiguration "ddbc" "full"
 }
-
-configuration "test"{
-	versions "norm_test"
+configuration "mysql" {
+	subConfiguration "ddbc" "MySQL"
+}
+configuration "sqlite" {
+	subConfiguration "ddbc" "SQLite"
+}
+configuration "pgsql" {
+	subConfiguration "ddbc" "PGSQL"
+}
+configuration "test" {
 	targetType "executable"
+	versions "norm_test"
+	subConfiguration "ddbc" "test"
 }
