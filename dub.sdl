@@ -3,13 +3,13 @@ description "simple ORM for D using DDBC"
 authors "nafees"
 copyright "Copyright © 2023-2024, nafees"
 license "MIT"
-dependency "utils" version="~>0.7.0"
 dependency "ddbc" version="~>0.6.0"
+subConfiguration "ddbc" "SQLite"
 configuration "default" {
 	targetType "library"
-	subConfiguration "ddbc" "full"
+	//subConfiguration "ddbc" "full"
 }
-configuration "mysql" {
+/*configuration "mysql" {
 	subConfiguration "ddbc" "MySQL"
 }
 configuration "sqlite" {
@@ -17,9 +17,8 @@ configuration "sqlite" {
 }
 configuration "pgsql" {
 	subConfiguration "ddbc" "PGSQL"
-}
+}*/
 configuration "test" {
 	targetType "executable"
 	versions "norm_test"
-	subConfiguration "ddbc" "test"
 }

@@ -1,6 +1,7 @@
 # norm
 
-A simple ORM for use with D Language and MariaDB/MySQL.
+A simple ORM for use with D Language and SQLite (for now). Support for MYSQL,
+PGSQL etc may arrive later.
 
 norm provides simple functions to get started quickly with saving/retrieving
 objects to/from SQL databases.
@@ -20,13 +21,10 @@ not appear when built using `dub build -b=release`
 
 ### Connecting
 
-Use the `connect(connectionString)` function to create a Connection object.
-
-This is the same as doing `new Connection(string)` after imporing mysql-native,
-but norm provides this function so the import is not needed.
+Use the `connect(connectionString)` function to create a `NormConn` object.
 
 ```D
-auto conn = connect("host=localhost;port=3306;user=dummy;pwd=dummy;db=dummy");
+auto conn = connect("ddbc:sqlite:xyz.sqlite");
 ```
 
 ### Defining Objects

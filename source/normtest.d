@@ -7,7 +7,7 @@ version(norm_test){
 	import std.datetime;
 	import std.conv : to;
 
-	enum CONN_STR = "host=localhost;port=3306;user=dummy;pwd=dummy;db=dummy";
+	enum CONN_STR = "ddbc:sqlite:test.sqlite";
 
 	class User : DBObject{
 		public:
@@ -73,9 +73,6 @@ version(norm_test){
 		admin.username = "aadmin";
 		assert(update!(User, "username")(conn, admin, "admin"));
 
-		writeln("I should print exactly one \"MySQL error\" now");
-		writeln("waiting for enter press.."); readln;
-		assert (dropTable!User(conn) == false);
 		assert (dropTable!Post(conn));
 		assert (dropTable!User(conn));
 	}
