@@ -1,6 +1,7 @@
 module norm;
 
 import utils.misc;
+import mysql.safe;
 
 import std.string,
 			 std.array,
@@ -19,6 +20,20 @@ enum Val;
 struct Size{ ulong len; }
 /// Selection group
 struct Group{ string name; }
+
+/// joins AliasSeq of strings with a joinstring: `(..., joinstring)`
+private template Join(S...){
+	enum Join = joinedStr();
+	string joinedStr(){
+		string ret;
+		static if (S.length > 3){
+			static foreach (s; S[0 .. $ - 2])
+				ret ~= s ~ S[$ - 1];
+		}
+		ret ~= S[$ - 2];
+		return ret;
+	}
+}
 
 /// Member names that have @Val
 private template MembersWithVal(T){
@@ -48,12 +63,12 @@ private template Groups(T){
 
 /// Whether `typeof(T) : DBOject`
 private template IsDBObject(alias T) {
-	enum IsDBObj = is(typeof(T) : DBObject);
+	enum IsDBObject = is(typeof(T) : DBObject);
 }
 
 /// true if a DBObject refers to at least 1 other
 private template ContainsForeignKey(T) if (is(T : DBObject)){
-	enum ContainsForeignKey = anySatisfy!(IsDBObj, getSymbolsByUDA!(T, Val));
+	enum ContainsForeignKey = anySatisfy!(IsDBObject, getSymbolsByUDA!(T, Val));
 }
 
 /// Member names that are foreign keys
@@ -194,7 +209,7 @@ private template QueryInsert(T) if (is(T : DBObject)){
 
 /// Fetch all query
 private template QueryFetchAll(T){
-	enum QueryFetchAll = "SELECT __normId, " ~ MembersWithVal!T.join(", ") ~
+	enum QueryFetchAll = "SELECT __normId, " ~ Join!(MembersWithVal!T, ", ") ~
 		" FROM " ~ T.stringof ~ ";";
 }
 
@@ -206,13 +221,13 @@ private template QueryFetch(T){
 /// Fetch by a Group query
 private template QueryFetch(T, string name){
 	enum QueryFetch = QueryFetchAll!T.chomp(";") ~ " WHERE " ~
-		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
+		Join!(MembersWithGroup!(T, name), "=?, ") ~ "=?;";
 }
 
 /// Update all query
 private template QueryUpdateAll(T){
 	enum QueryUpdateAll = "UPDATE " ~ T.stringof ~ " SET " ~
-		MembersWithVal!T.join("=?, ") ~ "=?;";
+		Join!(MembersWithVal!T, "=?, ") ~ "=?;";
 }
 
 /// Update by id query
@@ -223,7 +238,7 @@ private template QueryUpdate(T){
 /// Update by a Group query
 private template QueryUpdate(T, string name){
 	enum QueryUpdate = QueryUpdateAll!T.chomp(";") ~ " WHERE " ~
-		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
+		Join!(MembersWithGroup!(T, name), "=?, ") ~ "=?;";
 }
 
 /// Drop all query
@@ -239,7 +254,7 @@ private template QueryDrop(T){
 /// Drop by a Group query
 private template QueryDrop(T, string name){
 	enum QueryDrop = QueryDropAll!T.chomp(";") ~ " WHERE " ~
-		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
+		Join!(MembersWithGroup!(T, name), "=?, ") ~ "=?;";
 }
 
 /// Count all query
@@ -255,7 +270,7 @@ private template QueryCount(T){
 /// Count by a Group query
 private template QueryCount(T, string name){
 	enum QueryCount = QueryCountAll!T.chomp(";") ~ " WHERE " ~
-		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
+		Join!(MembersWithGroup!(T, name), "=?, ") ~ "=?;";
 }
 
 /// Connects using a connection string
