@@ -2,12 +2,11 @@ module norm;
 
 import utils.misc;
 
-import mysql.safe;
-
 import std.string,
 			 std.array,
 			 std.algorithm,
 			 std.traits,
+			 std.meta,
 			 std.conv,
 			 std.datetime,
 			 std.stdio;
@@ -18,74 +17,51 @@ import core.vararg;
 enum Val;
 /// UDA. mark with size. use with string to make `VARCHAR(x)` etc
 struct Size{ ulong len; }
-/// Fetch group
+/// Selection group
 struct Group{ string name; }
 
 /// Member names that have @Val
 private template MembersWithVal(T){
-	enum MembersWithVal = getMembersWithVal();
-	private string[] getMembersWithVal(){
-		string[] ret;
-		static foreach (sym; getSymbolsByUDA!(T, Val))
-			ret ~= sym.stringof;
-		return ret;
-	}
+	alias MembersWithVal = AliasSeq!();
+	static foreach (sym; getSymbolsByUDA!(T, Val))
+		MembersWithVal = AliasSeq!(MembersWithVal, sym.stringof);
 }
 
 /// Member names that are of a specifc @Group name
 private template MembersWithGroup(T, string name){
-	enum MembersWithGroup = getMembersWithGroup;
-	private string[] getMembersWithGroup(){
-		string[] ret;
-		static foreach (sym; getSymbolsByUDA!(T, Group)){{
-			bool include = false;
-			static foreach (group; getUDAs!(sym, Group))
-				include = include || group.name == name;
-			if (include)
-				ret ~= sym.stringof;
-		}}
-		return ret;
+	alias MembersWithGroup = AliasSeq!();
+	static foreach (sym; getSymbolsByUDA!(T, Group)){
+		static if (anySatisfy!(GroupMatches, getUDAs!(sym, Group)))
+			MembersWithGroup = AliasSeq!(MembersWithGroup, sym.stringof);
 	}
+	private enum GroupMatches(alias G) = G.name == name;
 }
 
 /// Group names
 private template Groups(T){
-	enum Groups = getGroups;
-	private string[] getGroups(){
-		string[] ret;
-		static foreach (sym; getSymbolsByUDA!(T, Group)){
-			static foreach (group; getUDAs!(sym, Group)){
-				static if (!ret.canFind(group.name))
-					ret ~= group.name;
-			}
-		}
-		return ret;
+	alias Groups = AliasSeq!();
+	static foreach (sym; getSymbolsByUDA!(T, Group)){
+		static foreach (group; getUDAs!(sym, Group))
+			Groups = NoDuplicates!(Groups, group.name);
 	}
+}
+
+/// Whether `typeof(T) : DBOject`
+private template IsDBObject(alias T) {
+	enum IsDBObj = is(typeof(T) : DBObject);
 }
 
 /// true if a DBObject refers to at least 1 other
 private template ContainsForeignKey(T) if (is(T : DBObject)){
-	enum ContainsForeignKey = isComplexObject();
-	private bool isComplexObject(){
-		bool ret = false;
-		static foreach (sym; getSymbolsByUDA!(T, Val)){
-			static if (is(typeof(sym) : DBObject))
-				ret = true;
-		}
-		return ret;
-	}
+	enum ContainsForeignKey = anySatisfy!(IsDBObj, getSymbolsByUDA!(T, Val));
 }
 
 /// Member names that are foreign keys
 private template MembersWithFKey(T) if (is(T : DBObject)){
-	enum MembersWithFKey = getMembersWithFKey();
-	private string[] getMembersWithFKey(){
-		string[] ret;
-		static foreach (sym; getSymbolsByUDA!(T, Val)){
-			static if (is(typeof(sym) : DBObject))
-				ret ~= sym.stringof;
-		}
-		return ret;
+	alias MembersWithFKey = AliasSeq!();
+	static foreach (sym; getSymbolsByUDA!(T, Val)){
+		static if (IsDBObject!(sym))
+			MembersWithFKey = AliasSeq!(MembersWithFKey, sym.stringof);
 	}
 }
 
