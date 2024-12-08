@@ -6,7 +6,7 @@ version (norm_test){
 	import std.datetime;
 	import std.conv : to;
 
-	enum CONN_STR = "ddbc:sqlite:test.sqlite";
+	enum CONN_STR = "host=localhost;port=3306;user=tobe;pwd=tobe1234;db=tobe";
 
 	class User : DBObject{
 		public:

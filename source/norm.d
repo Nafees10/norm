@@ -1,17 +1,20 @@
 module norm;
 
+import utils.misc;
+
+import mysql.safe;
+
 import std.string,
 			 std.array,
 			 std.algorithm,
 			 std.traits,
-			 std.meta,
 			 std.conv,
 			 std.datetime,
-			 std.stdio;
+			 std.stdio,
+			 std.meta,
+			 std.traits;
 
 import core.vararg;
-
-import ddbc;
 
 /// UDA. label as Database column
 enum Val;
@@ -124,74 +127,30 @@ private template SQLType(alias sym){
 		enum SQLType = SQLTypeMap!(typeof(sym));
 }
 
-private void set(T)(PreparedStatement stmnt, int index, T val){
-	static if (is (T == bool))
-		stmnt.setBoolean(index, val);
-	else static if (is (T == ubyte) ||
-			is (T == ushort) ||
-			is (T == uint))
-		stmnt.setUint(index, val);
-	else static if (is (T == byte) ||
-			is (T == short) ||
-			is (T == int))
-		stmnt.setInt(index, val);
-	else static if (is (T == ulong))
-		stmnt.setUlong(index, val);
-	else static if (is (T == long))
-		stmnt.setLong(index, val);
-	else static if (is (T == float))
-		stmnt.setFloat(index, val);
-	else static if (is (T == double))
-		stmnt.setDouble(index, val);
-	else static if (is (T == DateTime))
-		stmnt.setDateTime(index, val);
-	else static if (is (T == Date))
-		stmnt.setDate(index, val);
-	else static if(is (T == TimeOfDay))
-		stmnt.setTime(index, val);
-	else static if (is (T == string) || is (T == char[]))
-		stmnt.setString(index, val);
-	else static if (is (T == enum))
-		stmnt.set!(OriginalType!(Unqual!T))(index, val);
-	else static if (is (T : DBObject))
-		stmnt.setUlong(index, val.__normId);
+/// converts to MySQLVal
+MySQLVal toSQL(From)(From val) pure {
+	static if (is (From == bool))
+		return MySQLVal(cast(int)(val * 1));
+	else static if (is (From == ubyte) ||
+			is (From == ushort) ||
+			is (From == uint))
+		return MySQLVal(cast(uint)val);
+	else static if (is (From == byte) ||
+			is (From == short) ||
+			is (From == int))
+		return MySQLVal(cast(int)val);
+	else static if (is (From == ulong))
+		return MySQLVal(cast(ulong)val);
+	else static if (is (From == long))
+		return MySQLVal(cast(long)val);
+	else static if (is (From == float))
+		return MySQLVal(cast(float)val);
+	else static if (is (From == double))
+		return MySQLVal(cast(double)val);
+	else static if (is (From == enum))
+		return MySQLVal(cast(OriginalType!(Unqual!From))val);
 	else
-		static assert (false, "unsupported type in norm.set: " ~ name);
-}
-
-private T get(T)(ResultSet res, int index){
-	static if (is (T == bool))
-		return res.getBoolean(index);
-	else static if (is (T == ubyte) ||
-			is (T == ushort) ||
-			is (T == uint))
-		return res.getUint(index);
-	else static if (is (T == byte) ||
-			is (T == short) ||
-			is (T == int))
-		return res.getInt(index);
-	else static if (is (T == ulong))
-		return res.getUlong(index);
-	else static if (is (T == long))
-		return res.getLong(index);
-	else static if (is (T == float))
-		return res.getFloat(index);
-	else static if (is (T == double))
-		return res.getDouble(index);
-	else static if (is (T == DateTime))
-		return res.getDateTime(index);
-	else static if (is (T == Date))
-		return res.getDate(index);
-	else static if(is (T == TimeOfDay))
-		return res.getTime(index);
-	else static if (is (T == string) || is (T == char[]))
-		return res.getString(index);
-	else static if (is (T == enum))
-		return res.get!(SQLTypeMap!(OriginalType!(Unqual!T)))(index);
-	else static if (is (T : DBObject))
-		static assert (false, "cannot use norm.get to get DBOject");
-	else
-		static assert (false, "unsupported type in norm.get: " ~ name);
+		return MySQLVal(val);
 }
 
 /// Parent class for all DBObjects
@@ -216,7 +175,7 @@ private template QueryCreate(T) if (is(T : DBObject)){
 	enum QueryCreate = generateQuery;
 	private string generateQuery(){
 		string ret = "CREATE TABLE " ~ T.stringof ~ " (" ~
-			"__normId INTEGER PRIMARY KEY, ";
+			"__normId BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, ";
 		static foreach (sym; getSymbolsByUDA!(T, Val))
 			ret ~= sym.stringof ~ " " ~ SQLType!sym ~ ", ";
 		static if (ContainsForeignKey!T){
@@ -252,7 +211,7 @@ private template QueryInsert(T) if (is(T : DBObject)){
 
 /// Fetch all query
 private template QueryFetchAll(T){
-	enum QueryFetchAll = "SELECT __normId, " ~ Join!(MembersWithVal!T, ", ") ~
+	enum QueryFetchAll = "SELECT __normId, " ~ MembersWithVal!T.join(", ") ~
 		" FROM " ~ T.stringof ~ ";";
 }
 
@@ -264,7 +223,7 @@ private template QueryFetch(T){
 /// Fetch by a Group query
 private template QueryFetch(T, string name){
 	enum QueryFetch = QueryFetchAll!T.chomp(";") ~ " WHERE " ~
-		Join!(MembersWithGroup!(T, name), "=?, ") ~ "=?;";
+		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
 }
 
 /// Update all query
@@ -297,7 +256,7 @@ private template QueryDrop(T){
 /// Drop by a Group query
 private template QueryDrop(T, string name){
 	enum QueryDrop = QueryDropAll!T.chomp(";") ~ " WHERE " ~
-		Join!(MembersWithGroup!(T, name), "=?, ") ~ "=?;";
+		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
 }
 
 /// Count all query
@@ -313,122 +272,59 @@ private template QueryCount(T){
 /// Count by a Group query
 private template QueryCount(T, string name){
 	enum QueryCount = QueryCountAll!T.chomp(";") ~ " WHERE " ~
-		Join!(MembersWithGroup!(T, name), "=?, ") ~ "=?;";
-}
-
-/// Norm Connection (a wrapper around DDBC Connection)
-public class NormConn : Connection{
-private:
-	PreparedStatement[string] _stmnt; /// prepared statements
-public:
-	this(Connection conn){
-		this._conn = conn;
-		stmnt = conn.createStatement();
-	}
-	Connection _conn; /// ddbc connection
-	Statement stmnt;
-	DialectType getDialectType(){
-		return _conn.getDialectType();
-	}
-	void close(){
-		foreach (query, st; _stmnt)
-			st.close();
-		_conn.close();
-	}
-	void commit(){
-		_conn.commit();
-	}
-	string getCatalog(){
-		return _conn.getCatalog();
-	}
-	void setCatalog(string catalog){
-		_conn.setCatalog(catalog);
-	}
-	bool isClosed(){
-		return _conn.isClosed();
-	}
-	void rollback(){
-		_conn.rollback();
-	}
-	bool getAutoCommit(){
-		return _conn.getAutoCommit();
-	}
-	void setAutoCommit(bool autoCommit){
-		_conn.setAutoCommit(autoCommit);
-	}
-	Statement createStatement(){
-		return _conn.createStatement();
-	}
-	PreparedStatement prepareStatement(string query){
-		if (auto val = query in _stmnt){
-			return *val;
-		}
-		PreparedStatement st = _conn.prepareStatement(query);
-		_stmnt[query] = st;
-		return st;
-	}
-	TransactionIsolation getTransactionIsolation(){
-		return _conn.getTransactionIsolation();
-	}
-	void setTransactionIsolation(TransactionIsolation level){
-		_conn.setTransactionIsolation(level);
-	}
+		MembersWithGroup!(T, name).join("=?, ") ~ "=?;";
 }
 
 /// Connects using a connection string
 ///
-/// See DDBC connecting strings
-NormConn connect(string url){
-	return new NormConn(createConnection(url));
+/// A connection string looks like:
+/// `"host=localhost;port=3306;user=dummy;pwd=dummy;db=dummy"`
+Connection connect(string str){
+	return new Connection(str);
 }
 
 public struct Results(T) if (is(T : DBObject)){
 private:
-	ResultSet _res;
-	bool over = false;
+	SafeResultRange _range;
 	static if (ContainsForeignKey!T)
-		NormConn _conn;
+		Connection _conn;
 
 	T _create(){
-		if (over)
+		if (_range.empty())
 			return null;
-		try{
-			T obj = new T();
-			obj.id = _res.get!ulong(1);
-			static foreach (i, name; MembersWithVal!T){ // the i + 1 is coz 0 is normId
-				static if (is(typeof(__traits(getMember, T, name)) : DBObject)){
-					// is a foreign key
-					if (!_res.isNull(i + 2))
-						__traits(getMember, obj, name) =
-							fetch!(typeof(__traits(getMember, T, name)))(
-									_conn, _res.getUlong(i + 2));
-				}else{
-					// is a value
+		T obj = new T();
+		obj.id = cast(ulong)_range.front[0];
+		static foreach (i, name; MembersWithVal!T){ // the i + 1 is coz 0 is normId
+			static if (ContainsForeignKey!T && // remove this first condition?
+					is(typeof(__traits(getMember, T, name)) : DBObject)){
+				// is a foreign key
+				if (!_range.front.isNull(i + 1))
 					__traits(getMember, obj, name) =
-						_res.get!(typeof(__traits(getMember, obj, name)))(i + 2);
-				}
+						fetch!(typeof(__traits(getMember, T, name)))(
+								_conn, cast(ulong)_range.front[i + 1]);
+			}else{
+				__traits(getMember, obj, name) =
+					cast(typeof(__traits(getMember, T, name)))_range.front[i + 1];
 			}
-			return obj;
-		} catch (Exception e){
-			debug stderr.writeln(e.msg);
-			return null;
 		}
+		return obj;
 	}
 
-	this(ResultSet res, NormConn conn = null){
-		_res = res;
+	this(SafeResultRange range, Connection conn = null){
+		_range = range;
 		static if (ContainsForeignKey!T)
 			_conn = conn;
-		over = !_res.next();
 	}
 
 public:
 	bool empty(){
-		return over;
+		return _range.empty;
 	}
+
 	void popFront(){
-		over = !_res.next();
+		return _range.popFront;
 	}
+
 	T front(){
 		return _create;
 	}
@@ -437,11 +333,10 @@ public:
 /// Creates a table
 ///
 /// Returns: true if done, false if not
-bool createTable(T)(NormConn conn) if (is(T : DBObject)){
+bool createTable(T)(Connection conn) if (is(T : DBObject)){
 	try{
-		conn.stmnt.executeUpdate(QueryCreate!T);
+		exec(conn, QueryCreate!T);
 		return true;
-		//return conn.stmnt.executeUpdate(QueryCreate!T) == 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -451,16 +346,14 @@ bool createTable(T)(NormConn conn) if (is(T : DBObject)){
 /// Inserts a object into table
 ///
 /// Returns: true if done, false if not
-bool insert(T)(NormConn conn, ref T obj) if (is(T : DBObject)){
+bool insert(T)(Connection conn, ref T obj) if (is(T : DBObject)){
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryInsert!T);
+		MySQLVal[MembersWithVal!T.length] vals;
 		static foreach (i, name; MembersWithVal!T)
-			stmnt.set(i + 1, __traits(getMember, obj, name));
-		import std.variant : Variant;
-		Variant id;
-		if (stmnt.executeUpdate(id) == 0)
+			vals[i] = __traits(getMember, obj, name).toSQL;
+		if (exec(conn, QueryInsert!T, vals) == 0)
 			return false;
-		obj.id = id.get!ulong;
+		obj.id = conn.lastInsertID;
 		return true;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
@@ -471,13 +364,13 @@ bool insert(T)(NormConn conn, ref T obj) if (is(T : DBObject)){
 /// Updates a object
 ///
 /// Returns: true if done, false if not
-bool update(T)(NormConn conn, T obj) if (is (T : DBObject)){
+bool update(T)(Connection conn, T obj){
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryUpdate!T);
+		MySQLVal[MembersWithVal!T.length + 1] vals;
 		static foreach (i, name; MembersWithVal!T)
-			stmnt.set(i + 1, __traits(getMember, obj, name));
-		stmnt.setUlong(MembersWithVal!T.length + 1, obj.id);
-		return stmnt.executeUpdate() >= 1;
+			vals[i] = __traits(getMember, obj, name).toSQL;
+		vals[$ - 1] = obj.id.toSQL;
+		return exec(conn, QueryUpdate!T, vals) >= 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -487,12 +380,12 @@ bool update(T)(NormConn conn, T obj) if (is (T : DBObject)){
 /// Updates all objects (i dont know why you would want to)
 ///
 /// Returns: number of objects updated
-ulong updateAll(T)(NormConn conn, T obj) if (is (T : DBObject)){
+ulong updateAll(T)(Connection conn, T obj){
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryUpdate!T);
-		static foreach (i, name; MembersWithVal!T)
-			stmnt.set(i + 1, __traits(getMember, obj, name));
-		return stmnt.executeUpdate() >= 1;
+		MySQLVal[MembersWithVal!T.length + 1] vals;
+		foreach (i, name; MembersWithVal!T)
+			vals[i] = __traits(getMember, obj, name).toSQL;
+		return exec(conn, QueryUpdateAll!T, vals);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return 0;
@@ -506,8 +399,8 @@ ulong updateAll(T)(NormConn conn, T obj) if (is (T : DBObject)){
 /// is updated whole
 ///
 /// Returns: number of objects updated
-ulong update(T, string gName, Types...)(NormConn conn, T obj, Types args)
-		if (is (T : DBObject)){
+ulong update(T, string gName, Types...)(Connection conn, T obj, Types args) if (
+		is (T : DBObject)){
 	static assert(Types.length == MembersWithGroup!(T, gName).length,
 			"unexpected number of arguments against group field members");
 	static foreach (i, name; MembersWithGroup!(T, gName))
@@ -515,12 +408,12 @@ ulong update(T, string gName, Types...)(NormConn conn, T obj, Types args)
 				"Types do not match group field member types");
 
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryUpdate!(T, gName));
+		MySQLVal[MembersWithVal!T.length + MembersWithGroup!(T, gName).length] vals;
 		static foreach (i, name; MembersWithVal!T)
-			stmnt.set(i + 1, __traits(getMember, obj, name));
+			vals[i] = __traits(getMember, obj, name).toSQL;
 		static foreach (i; 0 .. args.length)
-			stmnt.set(MembersWithVal!T.length + i + 1, args[i]);
-		return stmnt.executeUpdate();
+			vals[MembersWithVal!T.length + i] = args[i].toSQL;
+		return exec(conn, QueryUpdate!(T, gName), vals);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return 0;
@@ -530,11 +423,9 @@ ulong update(T, string gName, Types...)(NormConn conn, T obj, Types args)
 /// Fetches a object, by matching internal id
 ///
 /// Returns: Results
-T fetch(T)(NormConn conn, ulong id) if (is(T: DBObject)){
+T fetch(T)(Connection conn, ulong id) if (is(T: DBObject)){
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryFetch!T);
-		stmnt.setUlong(1, id);
-		return Results!T(stmnt.executeQuery(), conn).front;
+		return Results!T(query(conn, QueryFetch!T, [id.toSQL])).front;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return null;
@@ -544,8 +435,8 @@ T fetch(T)(NormConn conn, ulong id) if (is(T: DBObject)){
 /// Fetches by matching with a group
 ///
 /// Returns: Results
-Results!T fetch(T, string gName, Types...)(NormConn conn, Types args)
-		if (is(T : DBObject)){
+Results!T fetch(T, string gName, Types...)(Connection conn, Types args) if (
+		is(T : DBObject)){
 	static assert(Types.length == MembersWithGroup!(T, gName).length,
 			"unexpected number of arguments against group field members");
 	static foreach (i, name; MembersWithGroup!(T, gName))
@@ -553,10 +444,11 @@ Results!T fetch(T, string gName, Types...)(NormConn conn, Types args)
 				"types do not match group field member types");
 
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryFetch!(T, gName));
+		MySQLVal[MembersWithGroup!(T, gName)] vals;
 		static foreach (i; 0 .. args.length)
-			stmnt.set(i + 1, args[i]);
-		return Results!T(stmnt.executeQuery(), conn);
+			vals[i] = args[i].toSQL;
+
+		return Results!T(query(conn, QueryFetch!(T, gName), vals), conn);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return Results!T();
@@ -566,9 +458,9 @@ Results!T fetch(T, string gName, Types...)(NormConn conn, Types args)
 /// Fetches all objects.
 ///
 /// Returns: Results
-Results!T fetch(T)(NormConn conn) if (is(T : DBObject)){
+Results!T fetch(T)(Connection conn) if (is(T : DBObject)){
 	try{
-		return Results!T(conn.stmnt.executeQuery(QueryFetchAll!T), conn);
+		return Results!T(query(conn, QueryFetchAll!T), conn);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return Results!T();
@@ -578,11 +470,9 @@ Results!T fetch(T)(NormConn conn) if (is(T : DBObject)){
 /// Deletes object with matching internal id
 ///
 /// Returns: true if done, false if not
-bool drop(T)(NormConn conn, ulong id) if (is(T : DBObject)){
+bool drop(T)(Connection conn, ulong id) if (is(T : DBObject)){
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryDrop!T);
-		stmnt.setUlong(1, id);
-		return stmnt.executeUpdate() >= 1;
+		return exec(conn, QueryDrop!T, [id.toSQL]) >= 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -592,8 +482,8 @@ bool drop(T)(NormConn conn, ulong id) if (is(T : DBObject)){
 /// Deletes object(s) matcing a group
 ///
 /// Returns: number of objects deleted
-ulong drop(T, string gName, Types...)(NormConn conn, Types args)
-		if (is(T : DBObject)){
+ulong drop(T, string gName, Types...)(Connection conn, Types args) if (
+			is(T : DBObject)){
 	static assert(Types.length == MembersWithGroup!(T, gName).length,
 			"unexpected number of arguments against group field members");
 	static foreach (i, name; MembersWithGroup!(T, gName))
@@ -601,10 +491,11 @@ ulong drop(T, string gName, Types...)(NormConn conn, Types args)
 				"types do not match group field member types");
 
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryDrop!(T, gName));
+		MySQLVal[MembersWithGroup!(T, gName)] vals;
 		static foreach (i; 0 .. args.length)
-			stmnt.set(i + 1, args[i]);
-		return stmnt.executeUpdate();
+			vals[i] = args[i].toSQL;
+
+		return exec(conn, QueryDrop!(T, gName), vals);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return 0;
@@ -614,9 +505,9 @@ ulong drop(T, string gName, Types...)(NormConn conn, Types args)
 /// Deletes all objects
 ///
 /// Returns: number of objects deleted
-ulong drop(T)(NormConn conn) if (is(T : DBObject)){
+ulong drop(T)(Connection conn) if (is(T : DBObject)){
 	try{
-		return conn.stmnt.executeQuery(QueryDropAll!T);
+		return exec(conn, QueryDropAll!T);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return 0;
@@ -626,9 +517,10 @@ ulong drop(T)(NormConn conn) if (is(T : DBObject)){
 /// Deletes table
 ///
 /// Returns: true if done, false if not
-bool dropTable(T)(NormConn conn) if (is(T : DBObject)){
+bool dropTable(T)(Connection conn) if (is(T : DBObject)){
 	try{
-		return conn.stmnt.executeUpdate(QueryDropTable!T) >= 1;
+		exec(conn, QueryDropTable!T);
+		return true;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -636,12 +528,15 @@ bool dropTable(T)(NormConn conn) if (is(T : DBObject)){
 }
 
 /// Returns: count of objects in table
-ulong count(T)(NormConn conn) if (is(T : DBObject)){
+ulong count(T)(Connection conn) if (is(T : DBObject)){
 	try{
-		ResultSet res = conn.stmnt.executeQuery(QueryCountAll!T);
-		if (!res.next())
-			return 0; // ? wat
-		return res.getLong(1);
+		SafeResultRange res = query(conn, QueryCountAll!T);
+		if (res.empty) // ? wat
+			return 0;
+		SafeRow row = res.front;
+		if (row.length == 0 || row.isNull(0)) // w a t
+			return 0;
+		return cast(ulong)row[0];
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return 0;
@@ -649,8 +544,8 @@ ulong count(T)(NormConn conn) if (is(T : DBObject)){
 }
 
 /// Returns: count of objects by a group
-ulong count(T, string gName, Types...)(NormConn conn, Types args)
-		if (is(T : DBObject)){
+ulong count(T, string gName, Types...)(Connection conn, Types args) if (
+			is(T : DBObject)){
 	static assert(Types.length == MembersWithGroup!(T, gName).length,
 			"unexpected number of arguments against group field members");
 	static foreach (i, name; MembersWithGroup!(T, gName))
@@ -658,14 +553,11 @@ ulong count(T, string gName, Types...)(NormConn conn, Types args)
 				"Types do not match group field member types");
 
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryCount!(T, gName));
+		MySQLVal[MembersWithGroup!(T, gName)] vals;
 		foreach (i; 0 .. args.length)
-			stmnt.set(i + 1, args[i]);
+			vals[i] = args[i].toSQL;
 
-		ResultSet res = stmnt.executeQuery();
-		if (!res.next())
-			return 0; // ? wat
-		return res.getLong(1);
+		return exec(conn, QueryCount!(T, gName), vals);
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return 0;
@@ -673,15 +565,15 @@ ulong count(T, string gName, Types...)(NormConn conn, Types args)
 }
 
 /// Returns: true if object by an id exists
-bool exists(T)(NormConn conn, ulong id) if (is(T : DBObject)){
+bool exists(T)(Connection conn, ulong id) if (is(T : DBObject)){
 	try{
-		PreparedStatement stmnt = conn.prepareStatement(QueryCount!T);
-		stmnt.setUlong(1, id);
-
-		ResultSet res = stmnt.executeQuery();
-		if (!res.next())
-			return 0; // ? wat
-		return res.getLong(1) == 1;
+		SafeResultRange res = query(conn, QueryCount!T, [id.toSQL]);
+		if (res.empty) // ? wat
+			return false;
+		SafeRow row = res.front;
+		if (row.length == 0 || row.isNull(0)) // w a t
+			return false;
+		return cast(ulong)row[0] >= 1;
 	}catch (Exception e){
 		debug stderr.writeln(e.msg);
 		return false;
@@ -689,7 +581,7 @@ bool exists(T)(NormConn conn, ulong id) if (is(T : DBObject)){
 }
 
 /// Returns: true if object exists
-bool exists(T)(NormConn conn, T obj) if (is(T : DBObject)){
+bool exists(T)(Connection conn, T obj) if (is(T : DBObject)){
 	return exists!T(conn, obj.id);
 }
 
